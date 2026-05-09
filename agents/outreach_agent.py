@@ -1,4 +1,4 @@
-"""Outreach agent: personalized cold email for one research lead via Claude Haiku."""
+"""Cold call script generator for one lead via Claude Haiku."""
 
 from __future__ import annotations
 
@@ -14,27 +14,28 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 EXACT_OFFER = (
-    "We help trades businesses in Montreal stop losing leads after hours. "
-    "We do this through an automated response system that follows up with "
-    "every inquiry within 5 minutes. It works because the first company "
-    "to respond gets the job."
+    "We help trades businesses in Montreal stop losing leads after hours through an "
+    "automated response system that follows up with every inquiry within 5 minutes. "
+    "The first company to respond gets the job — and right now that's almost never "
+    "you after 6pm."
 )
 
 
 def _parse_json_object(text: str) -> dict[str, Any]:
     text = text.strip()
-    m = re.match(r"^```(?:json)?\s*([\s\S]*?)\s*```\s*$", text)
-    if m:
-        text = m.group(1).strip()
+    fenced = re.match(r"^```(?:json)?\s*([\s\S]*?)\s*```\s*$", text)
+    if fenced:
+        text = fenced.group(1).strip()
     return json.loads(text)
 
 
-def write_outreach_email(lead: dict[str, Any]) -> dict[str, str]:
+def generate_call_script(lead: dict[str, str]) -> dict[str, Any]:
     """
-    Build a personalized cold email for one lead.
+    Generate a personalized cold call script for one business lead.
 
-    `lead` matches research_agent output: keys name, phone, website, description.
-    Returns: {"to_business", "subject", "body"}.
+    Expected lead keys: name, phone, website, description.
+    Returns keys: business, opener, gatekeeper_script, owner_script,
+    objection_responses, close.
     """
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
@@ -45,34 +46,69 @@ def write_outreach_email(lead: dict[str, Any]) -> dict[str, str]:
     website = str(lead.get("website", "")).strip()
     description = str(lead.get("description", "")).strip()
 
+    if not all([name, phone, website, description]):
+        raise ValueError(
+            "lead must include non-empty values for name, phone, website, description"
+        )
+
     client = Anthropic(api_key=api_key)
 
-    user_prompt = f"""You are drafting one cold outreach email.
+    prompt = f"""You write high-conversion cold call scripts for trades businesses.
 
-Lead (Montreal-area trade business):
-- Business name: {name}
+Business details:
+- Name: {name}
 - Phone: {phone}
 - Website: {website}
-- Description from research: {description}
+- Description: {description}
 
-The pitch must use this EXACT three-sentence offer, copied word-for-word in the email body as one block (same punctuation; use only ASCII hyphen-minus `-`):
-{EXACT_OFFER}
+Create one script tailored to this business and return ONLY valid JSON.
 
-Around that block you may add a short personalized greeting and closing that mentions their name/description in a plausible way.
+The output must follow this exact structure and section goals:
+1) Opener: short pattern interrupt, state your name and Bermuda AI, ask a qualifying question about their after-hours lead response.
+2) Gatekeeper script: if someone other than the owner answers, a short bridge to get to the decision maker.
+3) Owner script: if owner answers, diagnose their pain around losing leads after hours, quantify it in dollars or jobs lost, then include this exact offer text verbatim:
+"{EXACT_OFFER}"
+4) Objection responses: include responses for exactly these objections:
+   - not interested
+   - too busy
+   - already have something
+   - send me info
+5) Close: lock a specific next step (short call or demo) and never leave without a time.
 
-Rules:
-- Personalize using the business name and the description.
-- The entire body (including the required offer text) must be strictly under 150 words.
-- Plain, professional tone; no fake claims beyond the description above.
+Personalization requirements:
+- Mention the business name naturally.
+- Use their description to make the script feel specific to their work.
 
-Reply with ONLY a JSON object, no markdown fences, keys exactly:
-{{"subject":"<short subject line>","body":"<email body>"}}"""
+Return ONLY this JSON shape with these exact keys:
+{{
+  "business": "<business name>",
+  "opener": "<text>",
+  "gatekeeper_script": "<text>",
+  "owner_script": "<text>",
+  "objection_responses": {{
+    "not interested": "<text>",
+    "too busy": "<text>",
+    "already have something": "<text>",
+    "send me info": "<text>"
+  }},
+  "close": "<text>"
+}}
+"""
 
     resp = client.messages.create(
         model="claude-haiku-4-5",
-        max_tokens=1024,
-        system="Follow instructions exactly. Output only JSON.",
-        messages=[{"role": "user", "content": user_prompt}],
+        max_tokens=1400,
+        system=(
+            "You are an AI agent for Bermuda AI, a Montreal-based AI automation agency that sells done-for-you conversion websites and automated lead response systems to skilled trades businesses (HVAC, plumbing, electrical, roofing, contracting) in Montreal. "
+            "The founder's offer is: We help trades businesses in Montreal stop losing leads after hours through an automated response system that follows up with every inquiry within 5 minutes. The first company to respond gets the job and right now that's almost never you after 6pm. "
+            "Key sales principles: sell outcomes not tools, one buyer one pain one outcome, diagnose before pitching, quantify pain in dollars and jobs lost, always close to a specific next step. "
+            "The discovery call sequence is: open with control, diagnose real pain, quantify cost, qualify across fit/priority/ability/timeline, frame value, secure locked next step. "
+            "Cold call structure: opener, gatekeeper bridge, owner diagnosis, offer delivery, objection handling, close to next step. "
+            "Pricing: $1,500 CAD setup, $250/month retainer. "
+            "Scripts must be sharp, outcome-focused, and follow the cold call pathway framework from opener through close to a locked next step. "
+            "Follow instructions exactly. Output only valid JSON."
+        ),
+        messages=[{"role": "user", "content": prompt}],
     )
 
     text_parts: list[str] = []
@@ -80,27 +116,39 @@ Reply with ONLY a JSON object, no markdown fences, keys exactly:
         if getattr(block, "type", None) == "text":
             text_parts.append(block.text)
     raw = "".join(text_parts).strip()
-
     data = _parse_json_object(raw)
-    subject = str(data["subject"]).strip()
-    body = str(data["body"]).strip()
+
+    required = {
+        "business",
+        "opener",
+        "gatekeeper_script",
+        "owner_script",
+        "objection_responses",
+        "close",
+    }
+    missing = required.difference(data.keys())
+    if missing:
+        raise ValueError(f"Model response missing required keys: {sorted(missing)}")
 
     return {
-        "to_business": name,
-        "subject": subject,
-        "body": body,
+        "business": str(data["business"]).strip(),
+        "opener": str(data["opener"]).strip(),
+        "gatekeeper_script": str(data["gatekeeper_script"]).strip(),
+        "owner_script": str(data["owner_script"]).strip(),
+        "objection_responses": dict(data["objection_responses"]),
+        "close": str(data["close"]).strip(),
     }
 
 
 if __name__ == "__main__":
     fake_lead = {
-        "name": "Plomberie Dupont",
-        "phone": "514-555-0199",
-        "website": "https://www.plomberiedupont.example",
+        "name": "Electrique Tremblay",
+        "phone": "514-555-0138",
+        "website": "https://www.electrique-tremblay.example",
         "description": (
-            "Residential and commercial plumber in Montreal: leaks, installs, "
-            "drains, and emergency calls."
+            "Montreal electrical contractor handling residential service calls, "
+            "panel upgrades, lighting installs, and urgent troubleshooting."
         ),
     }
-    result = write_outreach_email(fake_lead)
-    print(result)
+    script = generate_call_script(fake_lead)
+    print(json.dumps(script, indent=2, ensure_ascii=False))
