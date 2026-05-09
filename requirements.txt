@@ -1,0 +1,7 @@
+langgraph
+langchain
+langchain-community
+duckduckgo-search
+gspread
+google-auth
+python-dotenv
